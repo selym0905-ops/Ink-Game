@@ -1,0 +1,277 @@
+-- My Super Hub - Script Principal
+-- by .ftgs
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local WindUI = nil
+local function LoadWindUI()
+    local links = {
+        "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+        "https://raw.githubusercontent.com/Footagesus/WindUI/main/source.lua",
+    }
+    
+    for _, link in ipairs(links) do
+        local success, result = pcall(function()
+            return game:HttpGet(link, true)
+        end)
+        
+        if success and result then
+            local loadSuccess, lib = pcall(loadstring, result)
+            if loadSuccess and lib then
+                WindUI = lib()
+                if WindUI and type(WindUI) == "table" and WindUI.CreateWindow then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function CreateBackupUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "MySuperHub_Backup"
+    screenGui.Parent = game:GetService("CoreGui")
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 500, 0, 400)
+    mainFrame.Position = UDim2.new(0.5, -250, 0.5, -200)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    mainFrame.BackgroundTransparency = 0.05
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+    
+    local title = Instance.new("TextLabel")
+    title.Text = "✨ My Super Hub ✨"
+    title.Size = UDim2.new(1, 0, 0, 50)
+    title.BackgroundTransparency = 1
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 24
+    title.Font = Enum.Font.GothamBold
+    title.Parent = mainFrame
+    
+    local author = Instance.new("TextLabel")
+    author.Text = "by .ftgs"
+    author.Size = UDim2.new(1, 0, 0, 30)
+    author.Position = UDim2.new(0, 0, 0, 45)
+    author.BackgroundTransparency = 1
+    author.TextColor3 = Color3.fromRGB(150, 150, 150)
+    author.TextSize = 14
+    author.Font = Enum.Font.Gotham
+    author.Parent = mainFrame
+    
+    local status = Instance.new("TextLabel")
+    status.Text = "✅ Hub chargé avec succès !"
+    status.Size = UDim2.new(1, -40, 0, 40)
+    status.Position = UDim2.new(0, 20, 0, 90)
+    status.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    status.BackgroundTransparency = 0.5
+    status.TextColor3 = Color3.fromRGB(100, 255, 100)
+    status.TextSize = 14
+    status.Font = Enum.Font.Gotham
+    status.Parent = mainFrame
+    
+    local corner2 = Instance.new("UICorner")
+    corner2.CornerRadius = UDim.new(0, 8)
+    corner2.Parent = status
+    
+    return screenGui
+end
+
+print("Chargement de WindUI...")
+if not LoadWindUI() then
+    warn("WindUI non chargé, utilisation de l'UI de secours")
+    CreateBackupUI()
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "My Super Hub",
+            Text = "WindUI non chargé, mode secours activé",
+            Duration = 5
+        })
+    end)
+    return
+end
+
+print("WindUI chargé avec succès !")
+
+local Window = WindUI:CreateWindow({
+    Title = "My Super Hub",
+    Icon = "door-open",
+    Author = "by .ftgs",
+    Folder = "MySuperHub",
+    Size = UDim2.fromOffset(600, 480),
+    MinSize = Vector2.new(550, 400),
+    MaxSize = Vector2.new(900, 650),
+    Transparent = true,
+    Theme = "Dark",
+    Resizable = true,
+    SideBarWidth = 200,
+    HideSearchBar = true,
+    ScrollBarEnabled = false,
+    
+    User = {
+        Enabled = true,
+        Anonymous = true,
+        Callback = function()
+            print("Profile clicked")
+        end,
+    },
+})
+
+Window:Notify({
+    Title = "My Super Hub",
+    Description = "Bienvenue " .. game.Players.LocalPlayer.Name .. " !",
+    Duration = 4,
+    Icon = "door-open"
+})
+
+local Tabs = {
+    Player = Window:CreateTab({ Title = "Player", Icon = "user" }),
+    Movement = Window:CreateTab({ Title = "Movement", Icon = "move" }),
+    Visuals = Window:CreateTab({ Title = "Visuals", Icon = "eye" }),
+    Misc = Window:CreateTab({ Title = "Misc", Icon = "settings" })
+}
+
+local PlayerSection = Tabs.Player:CreateSection({ Title = "Player Stats" })
+
+local WalkspeedSlider = PlayerSection:CreateSlider({
+    Title = "Walk Speed",
+    Description = "Adjust walking speed",
+    Min = 16,
+    Max = 120,
+    Default = 16,
+    Callback = function(v)
+        local humanoid = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then pcall(function() humanoid.WalkSpeed = v end) end
+    end
+})
+
+local JumpSlider = PlayerSection:CreateSlider({
+    Title = "Jump Power",
+    Description = "Adjust jump height",
+    Min = 50,
+    Max = 250,
+    Default = 50,
+    Callback = function(v)
+        local humanoid = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then pcall(function() humanoid.JumpPower = v end) end
+    end
+})
+
+local InfiniteJump = PlayerSection:CreateToggle({
+    Title = "Infinite Jump",
+    Description = "Jump infinitely in air",
+    Callback = function(v)
+        _G.InfiniteJump = v
+        if v then
+            local UIS = game:GetService("UserInputService")
+            UIS.JumpRequest:Connect(function()
+                if _G.InfiniteJump then
+                    local humanoid = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("Humanoid")
+                    if humanoid then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end
+            end)
+        end
+    end
+})
+
+local MovementSection = Tabs.Movement:CreateSection({ Title = "Movement Options" })
+
+local Noclip = MovementSection:CreateToggle({
+    Title = "Noclip",
+    Description = "Walk through walls",
+    Callback = function(v)
+        _G.Noclip = v
+        if v then
+            game:GetService("RunService").Stepped:Connect(function()
+                if _G.Noclip then
+                    local char = game.Players.LocalPlayer.Character
+                    if char then
+                        for _, part in pairs(char:GetDescendants()) do
+                            if part:IsA("BasePart") then
+                                pcall(function() part.CanCollide = false end)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end
+})
+
+local VisualsSection = Tabs.Visuals:CreateSection({ Title = "Visual Settings" })
+
+local Fullbright = VisualsSection:CreateToggle({
+    Title = "Fullbright",
+    Description = "Remove darkness",
+    Callback = function(v)
+        if v then
+            game.Lighting.Brightness = 2
+            game.Lighting.ClockTime = 12
+            game.Lighting.FogEnd = 100000
+        else
+            game.Lighting.Brightness = 1
+            game.Lighting.ClockTime = 0
+            game.Lighting.FogEnd = 500
+        end
+    end
+})
+
+local MiscSection = Tabs.Misc:CreateSection({ Title = "Utilities" })
+
+local Rejoin = MiscSection:CreateButton({
+    Title = "Rejoin Game",
+    Description = "Rejoin current game",
+    Callback = function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, game.Players.LocalPlayer)
+    end
+})
+
+local ServerHop = MiscSection:CreateButton({
+    Title = "Server Hop",
+    Description = "Hop to another server",
+    Callback = function()
+        local response = game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?limit=100")
+        local data = game:GetService("HttpService"):JSONDecode(response)
+        local servers = {}
+        for _, v in pairs(data.data) do
+            if v.playing and v.id ~= game.JobId then
+                table.insert(servers, v.id)
+            end
+        end
+        if #servers > 0 then
+            game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, servers[math.random(1, #servers)], game.Players.LocalPlayer)
+        end
+    end
+})
+
+local AntiAFK = MiscSection:CreateToggle({
+    Title = "Anti AFK",
+    Description = "Prevent AFK kick",
+    Callback = function(v)
+        if v then
+            local vu = game:GetService("VirtualUser")
+            game:GetService("Players").LocalPlayer.Idled:Connect(function()
+                vu:CaptureController()
+                vu:ClickButton2(Vector2.new())
+            end)
+        end
+    end
+})
+
+game.Players.LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    local humanoid = char:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.WalkSpeed = WalkspeedSlider.Value or 16
+        humanoid.JumpPower = JumpSlider.Value or 50
+    end
+end)
+
+print("=== My Super Hub chargé avec succès ! ===")
