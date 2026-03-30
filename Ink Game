@@ -1,0 +1,1996 @@
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local lp = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local Window = Fluent:CreateWindow({
+    Title = "Sentinel - Ink Game",
+    SubTitle = " | version : 0.00.25",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(540, 360),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.K
+})
+
+local function SafeTP(targetCFrame)
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    hrp.Velocity = Vector3.zero
+    hrp.RotVelocity = Vector3.zero
+    hrp.Anchored = true
+    task.wait(0.05)
+    hrp.CFrame = targetCFrame
+    task.wait(0.15)
+    hrp.Anchored = false
+end
+
+-- ============================================================
+--  ANTI-RAGDOLL SYSTEM (amélioré)
+-- ============================================================
+local AntiRagdollSystem = {
+    IsRagdolled = false,
+    SavedPosition = nil,
+    SavedCFrame = nil,
+    RagdollStartTime = 0,
+    ForceTPCounter = 0,
+    OriginalCollisions = {},
+    Active = false,
+    LoopConnection = nil,
+    StateChangedConnection = nil,
+    DescendantAddedConnection = nil
+}
+
+local function CleanupAntiRagdoll(char)
+    if AntiRagdollSystem.StateChangedConnection then
+        AntiRagdollSystem.StateChangedConnection:Disconnect()
+        AntiRagdollSystem.StateChangedConnection = nil
+    end
+    if AntiRagdollSystem.DescendantAddedConnection then
+        AntiRagdollSystem.DescendantAddedConnection:Disconnect()
+        AntiRagdollSystem.DescendantAddedConnection = nil
+    end
+    if AntiRagdollSystem.LoopConnection then
+        AntiRagdollSystem.LoopConnection:Disconnect()
+        AntiRagdollSystem.LoopConnection = nil
+    end
+
+    if char then
+        for _, part in pairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.Anchored = false
+                if AntiRagdollSystem.OriginalCollisions[part] ~= nil then
+                    part.CanCollide = AntiRagdollSystem.OriginalCollisions[part]
+                end
+            end
+        end
+    end
+
+    AntiRagdollSystem.IsRagdolled = false
+    AntiRagdollSystem.SavedPosition = nil
+    AntiRagdollSystem.SavedCFrame = nil
+    AntiRagdollSystem.OriginalCollisions = {}
+    AntiRagdollSystem.ForceTPCounter = 0
+    AntiRagdollSystem.Active = false
+end
+
+local function SuperAntiRagdoll(char, hum, hrp)
+    if not char or not hum or not hrp then return end
+
+    CleanupAntiRagdoll(char)
+    AntiRagdollSystem.Active = true
+
+    -- Désactivation des états ragdoll
+    hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
+
+    -- Fonction interne : figer le personnage proprement
+    local function FreezeChar()
+        hrp.Anchored = true
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+        for _, part in pairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.Anchored = true
+                if not AntiRagdollSystem.OriginalCollisions[part] then
+                    AntiRagdollSystem.OriginalCollisions[part] = part.CanCollide
+                end
+                part.CanCollide = false
+                part.Velocity = Vector3.zero
+                part.RotVelocity = Vector3.zero
+            end
+        end
+    end
+
+    -- Fonction interne : supprimer les contraintes de ragdoll sans toucher aux Motor6D actifs
+    local function RemoveRagdollConstraints()
+        for _, d in pairs(char:GetDescendants()) do
+            if d:IsA("BallSocketConstraint") or d:IsA("NoCollisionConstraint") then
+                d:Destroy()
+            elseif d:IsA("Motor6D") and d.Enabled == false then
+                d.Enabled = true
+            end
+        end
+    end
+
+    -- Fonction interne : dégeler le personnage et restaurer les collisions
+    local function UnfreezeChar()
+        for _, part in pairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.Anchored = false
+                if AntiRagdollSystem.OriginalCollisions[part] ~= nil then
+                    part.CanCollide = AntiRagdollSystem.OriginalCollisions[part]
+                end
+            end
+        end
+        AntiRagdollSystem.OriginalCollisions = {}
+    end
+
+    AntiRagdollSystem.StateChangedConnection = hum.StateChanged:Connect(function(_, newState)
+        if not AntiRagdollSystem.Active then return end
+
+        local isRagdollState = (
+            newState == Enum.HumanoidStateType.Ragdoll or
+            newState == Enum.HumanoidStateType.FallingDown or
+            newState == Enum.HumanoidStateType.Physics
+        )
+
+        if isRagdollState then
+            if not AntiRagdollSystem.IsRagdolled then
+                -- Sauvegarder la position AVANT de figer
+                AntiRagdollSystem.SavedCFrame = hrp.CFrame
+                AntiRagdollSystem.SavedPosition = hrp.Position
+                AntiRagdollSystem.IsRagdolled = true
+                AntiRagdollSystem.RagdollStartTime = tick()
+                AntiRagdollSystem.ForceTPCounter = 0
+
+                FreezeChar()
+                RemoveRagdollConstraints()
+
+                hum.PlatformStand = false
+                task.defer(function()
+                    if AntiRagdollSystem.Active then
+                        hum:ChangeState(Enum.HumanoidStateType.Running)
+                    end
+                end)
+            end
+        else
+            if AntiRagdollSystem.IsRagdolled then
+                task.spawn(function()
+                    if not AntiRagdollSystem.Active then return end
+
+                    -- Vérifier si on a été déplacé pendant le ragdoll
+                    local savedPos = AntiRagdollSystem.SavedCFrame
+                    if savedPos then
+                        local dist = (hrp.Position - savedPos.Position).Magnitude
+                        if dist > 3 then
+                            hrp.Anchored = true
+                            hrp.CFrame = savedPos
+                            hrp.Velocity = Vector3.zero
+                            hrp.RotVelocity = Vector3.zero
+                            task.wait(0.08)
+
+                            -- Double vérification
+                            if (hrp.Position - savedPos.Position).Magnitude > 1 and AntiRagdollSystem.ForceTPCounter < 3 then
+                                AntiRagdollSystem.ForceTPCounter += 1
+                                hrp.CFrame = savedPos
+                                task.wait(0.1)
+                            end
+                        end
+                    end
+
+                    task.wait(0.1)
+                    UnfreezeChar()
+
+                    AntiRagdollSystem.IsRagdolled = false
+                    AntiRagdollSystem.SavedPosition = nil
+                    AntiRagdollSystem.SavedCFrame = nil
+                end)
+            end
+        end
+    end)
+
+    -- Heartbeat : surveillance légère (optimisé pour éviter le lag)
+    local heartbeatThrottle = 0
+    AntiRagdollSystem.LoopConnection = RunService.Heartbeat:Connect(function(dt)
+        if not AntiRagdollSystem.Active then return end
+        if not char or not char.Parent then return end
+
+        heartbeatThrottle += dt
+        -- Exécuter la logique lourde toutes les 3 frames environ (~0.05s) pour réduire le lag
+        if heartbeatThrottle < 0.05 then return end
+        heartbeatThrottle = 0
+
+        if AntiRagdollSystem.IsRagdolled then
+            -- Maintenir le freeze
+            if hrp and not hrp.Anchored then
+                hrp.Anchored = true
+                hrp.Velocity = Vector3.zero
+            end
+
+            for _, part in pairs(char:GetChildren()) do
+                if part:IsA("BasePart") and not part.Anchored then
+                    part.Anchored = true
+                    part.Velocity = Vector3.zero
+                end
+            end
+
+            -- Corriger la position si déplacé
+            if AntiRagdollSystem.SavedCFrame and hrp then
+                if (hrp.Position - AntiRagdollSystem.SavedCFrame.Position).Magnitude > 2 then
+                    hrp.CFrame = AntiRagdollSystem.SavedCFrame
+                end
+            end
+
+            -- Supprimer les contraintes ragdoll ajoutées dynamiquement
+            for _, d in pairs(char:GetDescendants()) do
+                if d:IsA("BallSocketConstraint") or d:IsA("NoCollisionConstraint") then
+                    d:Destroy()
+                end
+            end
+        end
+
+        -- PlatformStand bypass
+        if hum and hum.PlatformStand then
+            hum.PlatformStand = false
+            if not AntiRagdollSystem.IsRagdolled then
+                AntiRagdollSystem.SavedCFrame = hrp.CFrame
+                AntiRagdollSystem.SavedPosition = hrp.Position
+                AntiRagdollSystem.IsRagdolled = true
+                hrp.Anchored = true
+            end
+        end
+    end)
+
+    AntiRagdollSystem.DescendantAddedConnection = char.DescendantAdded:Connect(function(descendant)
+        if not AntiRagdollSystem.Active then return end
+
+        if descendant:IsA("BallSocketConstraint") or descendant:IsA("NoCollisionConstraint") then
+            task.defer(function() if descendant and descendant.Parent then descendant:Destroy() end end)
+        end
+
+        if descendant:IsA("Motor6D") then
+            descendant:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if AntiRagdollSystem.Active and descendant and descendant.Parent then
+                    if not descendant.Enabled then
+                        descendant.Enabled = true
+                    end
+                end
+            end)
+        end
+    end)
+end
+
+local function SetupAntiRagdoll()
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp then
+        SuperAntiRagdoll(char, hum, hrp)
+    end
+end
+
+-- ============================================================
+--  SETTINGS
+-- ============================================================
+local Settings = {
+    WS = 16, WSEnabled = false,
+    JP = 50, JPEnabled = false,
+    Grav = 196.2, GravEnabled = false,
+    FlySpeed = 50, FlyEnabled = false,
+    InfJump = false, Noclip = false,
+    AntiRagdoll = false, AntiRollback = true,
+    FreecamEnabled = false, FreecamSpeed = 1, FreecamRotX = 0, FreecamRotY = 0,
+    ESPEnabled = false, ESPBoxes = false, ESPHighlight = false, ESPNames = false, ESPDistance = false, ESPTracers = false,
+    ESPColor = Color3.fromRGB(255, 255, 255), FillTransparency = 0.5, BoxThickness = 1,
+    CurrentPos = "0, 0, 0",
+    RoleESP = false,
+    FullBright = false,
+    LastPos = nil,
+    InfStamina = false,
+    HideStaminaBar = false,
+    AutoPull = false,
+    PerfectPull = false,
+    AnimId = "",
+    AnimLoop = false,
+    CurrentAnimTrack = nil,
+    AntiBlink = false,
+    HNSStaminaTrack = nil,
+    SelectedEmote = "",
+    EmoteSpeed = 1,
+    EmoteLoop = false,
+    CurrentEmoteTrack = nil,
+    AutoFarmBandages = false,
+    LowPVSliderValue = 50,
+    TPToSafeZoneOnLowPV = false,
+    StalkHider = false,
+    CurrentTargetHider = nil,
+    StalkConnection = nil,
+    IgnoreFriends = false,
+    AutoJump = false,
+    AutoBalance = false,
+    NoFall = false,
+    FOVEnabled = false,
+    FOVValue = 120,
+    -- Parkour Artist
+    ParkourArtist = false,
+    ParkourJumpCount = 0,
+    ParkourBackflipTrack = nil,
+    ParkourSliding = false,
+    ParkourLastJumpTime = 0,  -- Pour le cooldown du backflip
+    -- Slide animations
+    SlideStartAnimTrack = nil,
+    SlideLoopAnimTrack = nil,
+    -- Wall Detector (faux noclip visuel)
+    WallDetector = false
+}
+
+local lastJump = 0
+local ESP_Objects = {}
+local FreecamPos = Vector3.new(0, 0, 0)
+local origAmbient = Lighting.Ambient
+local origOutdoorAmbient = Lighting.OutdoorAmbient
+local originalFOV = Camera.FieldOfView
+
+-- ============================================================
+--  FOV
+-- ============================================================
+local fovConnections = {}
+local fovToggleRef = nil
+local fovSliderRef = nil
+
+local function EnforceFOV()
+    if Settings.FOVEnabled and Camera.FieldOfView ~= Settings.FOVValue then
+        Camera.FieldOfView = Settings.FOVValue
+    end
+end
+
+local function StartFOVForcing()
+    for _, conn in ipairs(fovConnections) do conn:Disconnect() end
+    fovConnections = {}
+    if Settings.FOVEnabled then
+        table.insert(fovConnections, RunService.Heartbeat:Connect(EnforceFOV))
+        table.insert(fovConnections, RunService.RenderStepped:Connect(EnforceFOV))
+        table.insert(fovConnections, Camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+            if Settings.FOVEnabled and Camera.FieldOfView ~= Settings.FOVValue then
+                task.defer(EnforceFOV)
+            end
+        end))
+        EnforceFOV()
+    end
+end
+
+-- ============================================================
+--  GUARD / ROLE DETECTION
+-- ============================================================
+local GuardGuns = {
+    "Colt M1911","Colt Python 6","Deagle","FN Fal","Five Seven","G3SG1",
+    "Glock 17","Golden Deagle","HK416","M4A1","MP5","MP5K","P90",
+    "Revolver","Sawn Off","Stim Pistol","Thompson M1A1","Uzi"
+}
+local MeleeWeapons = {"Knife","Couteau","Fist","Poing"}
+
+local function HasTool(player, list)
+    local char = player.Character
+    local backpack = player:FindFirstChild("Backpack")
+    local function checkIn(container)
+        if not container then return false end
+        for _, child in pairs(container:GetChildren()) do
+            if child:IsA("Tool") then
+                for _, name in pairs(list) do
+                    if child.Name == name then return true end
+                end
+            end
+        end
+        return false
+    end
+    return checkIn(char) or checkIn(backpack)
+end
+
+local function IsGuard(player)
+    if HasTool(player, GuardGuns) then return true end
+    local char = player.Character
+    if not char then return false end
+    if char:GetAttribute("TypeOfGuard") then return true end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+                if track.Animation and string.find(tostring(track.Animation.AnimationId), "WalkGuard") then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function IsSeeker(player)
+    return HasTool(player, MeleeWeapons)
+end
+
+local function IsHider(player)
+    return not IsGuard(player) and not IsSeeker(player)
+end
+
+local function GetRoleColor(player)
+    if IsGuard(player) then return Color3.fromRGB(128, 0, 255)
+    elseif IsSeeker(player) then return Color3.fromRGB(255, 0, 0)
+    else return Color3.fromRGB(0, 150, 255) end
+end
+
+local function GetESPColor(player)
+    if Settings.RoleESP then return GetRoleColor(player) end
+    return Settings.ESPColor
+end
+
+-- ============================================================
+--  AUTO-JUMP / AUTO-BALANCE / NO-FALL
+-- ============================================================
+local autoJumpConnection, autoBalanceConnection, noFallConnection = nil, nil, nil
+
+local function StartAutoJump()
+    if autoJumpConnection then autoJumpConnection:Disconnect() end
+    autoJumpConnection = RunService.Heartbeat:Connect(function()
+        if not Settings.AutoJump then return end
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and char:GetAttribute("JumpRopeZone") then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end)
+end
+
+local function StartAutoBalance()
+    if autoBalanceConnection then autoBalanceConnection:Disconnect() end
+    autoBalanceConnection = RunService.Heartbeat:Connect(function()
+        if not Settings.AutoBalance then return end
+        local char = lp.Character
+        if not char then return end
+        if not char:GetAttribute("JumpRopeZone") then return end
+        if char:FindFirstChild("OkToBalance") then
+            keypress(0x44)
+            task.wait(0.05)
+            keyrelease(0x44)
+        end
+    end)
+end
+
+local function StartNoFall()
+    if noFallConnection then noFallConnection:Disconnect() end
+    noFallConnection = RunService.Heartbeat:Connect(function()
+        if not Settings.NoFall then return end
+        local char = lp.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp and char:GetAttribute("JumpRopeZone") then
+            if hrp.Position.Y < 193 then
+                hrp.CFrame = CFrame.new(hrp.Position.X, 196.2, hrp.Position.Z)
+                hrp.Velocity = Vector3.new(hrp.Velocity.X, 0, hrp.Velocity.Z)
+            end
+        end
+    end)
+end
+
+-- ============================================================
+--  STALK HIDER
+-- ============================================================
+local function FindNewHiderTarget()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 and IsHider(p) then
+                return p
+            end
+        end
+    end
+    return nil
+end
+
+local function StartStalkingHider()
+    if Settings.StalkConnection then
+        Settings.StalkConnection:Disconnect()
+        Settings.StalkConnection = nil
+    end
+    if not Settings.StalkHider then return end
+
+    local targetHider = FindNewHiderTarget()
+    if not targetHider then return end
+    Settings.CurrentTargetHider = targetHider
+
+    local char = lp.Character
+    if char then
+        local knife = char:FindFirstChild("Couteau") or char:FindFirstChild("Knife")
+        if not knife then
+            local backpack = lp:FindFirstChild("Backpack")
+            if backpack then
+                knife = backpack:FindFirstChild("Couteau") or backpack:FindFirstChild("Knife")
+                if knife then knife.Parent = char end
+            end
+        end
+    end
+
+    Settings.StalkConnection = RunService.Heartbeat:Connect(function()
+        if not Settings.StalkHider then
+            if Settings.StalkConnection then Settings.StalkConnection:Disconnect() Settings.StalkConnection = nil end
+            return
+        end
+
+        local targetChar = Settings.CurrentTargetHider and Settings.CurrentTargetHider.Character
+        local targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+        local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
+
+        if not targetHRP or not targetHum or targetHum.Health <= 0 or not IsHider(Settings.CurrentTargetHider) then
+            local newTarget = FindNewHiderTarget()
+            if newTarget then
+                Settings.CurrentTargetHider = newTarget
+                targetChar = newTarget.Character
+                targetHRP = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+            else return end
+        end
+
+        local lpChar = lp.Character
+        local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+        if targetHRP and lpHRP then
+            local targetPos = targetHRP.Position
+            local targetLook = targetHRP.CFrame.LookVector
+            local behindPos = targetPos - (targetLook * 1.5)
+            lpHRP.CFrame = CFrame.new(behindPos, targetPos)
+
+            local knife = lpChar:FindFirstChild("Couteau") or lpChar:FindFirstChild("Knife")
+            if knife then
+                lp.Character.Humanoid:EquipTool(knife)
+                task.wait(0.05)
+                local mouse = lp:GetMouse()
+                if mouse then
+                    mouse.Button1Down:Fire()
+                    task.wait(0.1)
+                    mouse.Button1Up:Fire()
+                end
+            end
+        end
+    end)
+end
+
+local function StopStalking()
+    if Settings.StalkConnection then
+        Settings.StalkConnection:Disconnect()
+        Settings.StalkConnection = nil
+    end
+    Settings.CurrentTargetHider = nil
+end
+
+-- ============================================================
+--  AUTO FARM BANDAGES / TP SAFE ZONE
+-- ============================================================
+local function CheckBandageInInventory()
+    local char = lp.Character
+    local backpack = lp:FindFirstChild("Backpack")
+    local function scanContainer(container)
+        if not container then return false end
+        for _, tool in pairs(container:GetChildren()) do
+            if tool:IsA("Tool") then
+                local n = string.lower(tool.Name)
+                if n == "bandage" or n == "bandagerig" then return true end
+            end
+        end
+        return false
+    end
+    return scanContainer(char) or scanContainer(backpack)
+end
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if Settings.TPToSafeZoneOnLowPV then
+            local char = lp.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 and hum.Health < Settings.LowPVSliderValue then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local safeZone = Vector3.new(-237.37, 77.37, 601.85)
+                        if (hrp.Position - safeZone).Magnitude > 10 then
+                            SafeTP(CFrame.new(safeZone))
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if Settings.AutoFarmBandages then
+            if not CheckBandageInInventory() then
+                local droppedBandage = nil
+                for _, obj in pairs(workspace:GetDescendants()) do
+                    if obj:IsA("Model") and obj.Name == "DroppedBandage" then
+                        for _, child in pairs(obj:GetChildren()) do
+                            if child.Name == "BandageRig" then
+                                droppedBandage = obj
+                                break
+                            end
+                        end
+                        if droppedBandage then break end
+                    end
+                end
+                if droppedBandage then
+                    local bandagePos = droppedBandage:FindFirstChild("HumanoidRootPart")
+                        or droppedBandage:FindFirstChild("Head")
+                        or droppedBandage:FindFirstChildWhichIsA("BasePart")
+                    if bandagePos then
+                        SafeTP(bandagePos.CFrame * CFrame.new(0, 2, 0))
+                        local startTime = tick()
+                        repeat
+                            task.wait(0.1)
+                            if not droppedBandage or not droppedBandage.Parent then break end
+                        until CheckBandageInInventory() or (tick() - startTime) > 5
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  INF STAMINA (CORRIGÉ - plus de bug de WalkSpeed)
+-- ============================================================
+task.spawn(function()
+    while task.wait() do
+        if Settings.InfStamina then
+            -- Cacher la barre de stamina visuellement
+            local pGui = lp:FindFirstChild("PlayerGui")
+            if pGui then
+                for _, v in pairs(pGui:GetDescendants()) do
+                    if v.Name == "StaminaBar" and v:IsA("Frame") then
+                        v.Size = UDim2.new(1, 0, 1, 0)
+                    end
+                end
+            end
+            local uiFolder = ReplicatedStorage:FindFirstChild("UI")
+            if uiFolder then
+                local sf = uiFolder:FindFirstChild("StaminaBar")
+                if sf and sf:IsA("Frame") then sf.Size = UDim2.new(1, 0, 1, 0) end
+            end
+
+            -- Gestion de l'animation de course sans forcer WalkSpeed
+            local char = lp.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                -- NE PAS forcer WalkSpeed = 40 ici !
+                if hum.MoveDirection.Magnitude > 0 then
+                    -- Arrêter les animations de marche/course par défaut
+                    for _, track in pairs(hum:GetPlayingAnimationTracks()) do
+                        if track.Animation.AnimationId == "rbxassetid://82609803681213"
+                            or track.Name == "WalkAnim" or track.Name == "RunAnim" or track.Name == "Sprint" then
+                            track:Stop(0.1)
+                        end
+                    end
+                    -- Lancer l'animation HNS personnalisée
+                    if not Settings.HNSStaminaTrack then
+                        local anim = Instance.new("Animation")
+                        anim.AnimationId = "rbxassetid://99542685125204"
+                        Settings.HNSStaminaTrack = hum:LoadAnimation(anim)
+                        Settings.HNSStaminaTrack.Looped = true
+                        Settings.HNSStaminaTrack:Play()
+                    elseif not Settings.HNSStaminaTrack.IsPlaying then
+                        Settings.HNSStaminaTrack:Play()
+                    end
+                else
+                    if Settings.HNSStaminaTrack and Settings.HNSStaminaTrack.IsPlaying then
+                        Settings.HNSStaminaTrack:Stop(0.1)
+                    end
+                end
+            end
+        else
+            if Settings.HNSStaminaTrack then
+                Settings.HNSStaminaTrack:Stop()
+                Settings.HNSStaminaTrack = nil
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.1) do
+        if Settings.HideStaminaBar then
+            local pGui = lp:FindFirstChild("PlayerGui")
+            if pGui then
+                for _, v in pairs(pGui:GetDescendants()) do
+                    if v.Name == "StaminaBar" and v:IsA("Frame") then
+                        v.Visible = false
+                    end
+                end
+            end
+            local uiFolder = ReplicatedStorage:FindFirstChild("UI")
+            if uiFolder then
+                local sf = uiFolder:FindFirstChild("StaminaBar")
+                if sf and sf:IsA("Frame") then sf.Visible = false end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  ANTI-BLINK
+-- ============================================================
+task.spawn(function()
+    while task.wait() do
+        if Settings.AntiBlink then
+            local pGui = lp:FindFirstChild("PlayerGui")
+            local dalgonaUI = pGui and pGui:FindFirstChild("DalgonaUI")
+            if dalgonaUI then
+                local bf = dalgonaUI:FindFirstChild("Blinking")
+                if bf then bf:Destroy() end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  AUTO PULL
+-- ============================================================
+task.spawn(function()
+    while task.wait() do
+        if Settings.AutoPull or Settings.PerfectPull then
+            local waitTime = Settings.PerfectPull and 0.05 or 0.01
+            keypress(0x45)
+            task.wait(waitTime)
+            keyrelease(0x45)
+        end
+    end
+end)
+
+-- ============================================================
+--  MOUSE INPUT (freecam)
+-- ============================================================
+UserInputService.InputChanged:Connect(function(input)
+    if Settings.FreecamEnabled and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Delta
+        Settings.FreecamRotY = Settings.FreecamRotY - delta.X * 0.005
+        Settings.FreecamRotX = math.clamp(Settings.FreecamRotX - delta.Y * 0.005, -math.rad(89), math.rad(89))
+    end
+end)
+
+-- ============================================================
+--  CRÉATION DES TABS
+-- ============================================================
+local Tab            = Window:AddTab({ Title = "Main", Icon = "user" })
+local ESPTab         = Window:AddTab({ Title = "ESP", Icon = "eye" })
+local VisualTab      = Window:AddTab({ Title = "Visual", Icon = "ghost" })
+local EmptyTab       = Window:AddTab({ Title = "Unlock all", Icon = "key" })
+local GameTab        = Window:AddTab({ Title = "Red Light / Green Light", Icon = "lightbulb" })
+local DalgonaTab     = Window:AddTab({ Title = "Dalgona [BETA]", Icon = "cookie" })
+local pentathlonTab  = Window:AddTab({ Title = "pentathlon [SOON]", Icon = "gamepad" })
+local LightOutTab    = Window:AddTab({ Title = "Light out", Icon = "moon" })
+local HidenSeekTab   = Window:AddTab({ Title = "Hide n Seek", Icon = "swords" })
+local TugOfWarTab    = Window:AddTab({ Title = "Tug of War [ALPHA]", Icon = "activity" })
+local JumpRopeTab    = Window:AddTab({ Title = "Jump Rope", Icon = "bone" })
+local GlasseBridgeTab= Window:AddTab({ Title = "Glass Bridge", Icon = "layers" })
+local MingleTab      = Window:AddTab({ Title = "Mingle [SOON]", Icon = "target" })
+local SkySquidTab    = Window:AddTab({ Title = "Sky squid game", Icon = "cloud" })
+local UtilsTab       = Window:AddTab({ Title = "Developers tools", Icon = "wrench" })
+
+-- ============================================================
+--  VISUAL TAB - FOV
+-- ============================================================
+local FOVSection = VisualTab:AddSection("Field of View")
+
+local fovSlider = FOVSection:AddSlider("FOVSlider", {
+    Title = "FOV",
+    Description = "Adjust your field of view (60 - 120)",
+    Default = 120, Min = 60, Max = 120, Rounding = 0,
+    Callback = function(value)
+        Settings.FOVValue = value
+        if Settings.FOVEnabled then EnforceFOV() end
+    end
+})
+
+local fovToggle = FOVSection:AddToggle("FOVToggle", { Title = "Enable FOV", Default = false })
+fovToggle:OnChanged(function(enabled)
+    Settings.FOVEnabled = enabled
+    if enabled then
+        StartFOVForcing()
+    else
+        for _, conn in ipairs(fovConnections) do conn:Disconnect() end
+        fovConnections = {}
+        Camera.FieldOfView = originalFOV
+    end
+end)
+
+FOVSection:AddButton({
+    Title = "Reset FOV",
+    Callback = function()
+        Settings.FOVEnabled = false
+        Camera.FieldOfView = originalFOV
+        fovToggle:SetValue(false)
+    end
+})
+
+fovToggleRef = fovToggle
+fovSliderRef = fovSlider
+
+lp.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    originalFOV = Camera.FieldOfView
+    if Settings.FOVEnabled then EnforceFOV() end
+end)
+
+-- ============================================================
+--  VISUAL TAB - X-RAY
+-- ============================================================
+local WorldSection = VisualTab:AddSection("X-Ray")
+
+local xrayConnections = {}
+local xrayEnabled = false
+local originalProperties = {}
+
+local function SavePartProperties(part)
+    if not originalProperties[part] then
+        originalProperties[part] = {
+            Material = part.Material,
+            Transparency = part.Transparency,
+            Color = part.Color
+        }
+    end
+end
+
+local function RestorePartProperties()
+    for part, props in pairs(originalProperties) do
+        if part and part.Parent then
+            pcall(function()
+                part.Material = props.Material
+                part.Transparency = props.Transparency
+                part.Color = props.Color
+            end)
+        end
+    end
+    originalProperties = {}
+end
+
+local function ApplyXRay()
+    for _, part in pairs(workspace:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" and not part:IsA("Terrain") then
+            SavePartProperties(part)
+            part.Material = Enum.Material.ForceField
+            part.Transparency = 0.35
+        end
+    end
+end
+
+local function StartXRayMonitoring()
+    for _, conn in ipairs(xrayConnections) do conn:Disconnect() end
+    xrayConnections = {}
+    if xrayEnabled then
+        local conn = workspace.DescendantAdded:Connect(function(descendant)
+            if descendant:IsA("BasePart") and descendant.Name ~= "HumanoidRootPart" then
+                task.wait(0.1)
+                if descendant and descendant.Parent then
+                    SavePartProperties(descendant)
+                    descendant.Material = Enum.Material.ForceField
+                    descendant.Transparency = 0.35
+                end
+            end
+        end)
+        table.insert(xrayConnections, conn)
+    end
+end
+
+local xrayToggle = WorldSection:AddToggle("XRayToggle", {
+    Title = "X-Ray",
+    Description = "Enable to see through walls",
+    Default = false
+})
+xrayToggle:OnChanged(function(enabled)
+    xrayEnabled = enabled
+    if enabled then
+        ApplyXRay()
+        StartXRayMonitoring()
+    else
+        RestorePartProperties()
+        for _, conn in ipairs(xrayConnections) do conn:Disconnect() end
+        xrayConnections = {}
+    end
+end)
+
+WorldSection:AddButton({
+    Title = "Reset Visuals",
+    Callback = function()
+        xrayEnabled = false
+        xrayToggle:SetValue(false)
+        RestorePartProperties()
+        for _, conn in ipairs(xrayConnections) do conn:Disconnect() end
+        xrayConnections = {}
+    end
+})
+
+-- === DOUBLE JUMP AVEC COOLDOWN DE 0.1s ===
+local parkourJumpConnection = nil
+local parkourLandedConnection = nil
+
+-- Ajout d'un cooldown global de 5s pour le backflip et le slide
+local abilityCooldown = false
+local function startAbilityCooldown()
+    if abilityCooldown then return end
+    abilityCooldown = true
+    task.delay(5, function()
+        abilityCooldown = false
+    end)
+end
+
+local function StopParkourArtist()
+    if parkourJumpConnection then parkourJumpConnection:Disconnect() parkourJumpConnection = nil end
+    if parkourLandedConnection then parkourLandedConnection:Disconnect() parkourLandedConnection = nil end
+    if Settings.ParkourBackflipTrack then
+        Settings.ParkourBackflipTrack:Stop()
+        Settings.ParkourBackflipTrack = nil
+    end
+    if Settings.SlideStartAnimTrack then
+        Settings.SlideStartAnimTrack:Stop()
+        Settings.SlideStartAnimTrack = nil
+    end
+    if Settings.SlideLoopAnimTrack then
+        Settings.SlideLoopAnimTrack:Stop()
+        Settings.SlideLoopAnimTrack = nil
+    end
+    Settings.ParkourJumpCount = 0
+    Settings.ParkourSliding = false
+end
+
+local function StartParkourDoubleJump()
+    if parkourJumpConnection then parkourJumpConnection:Disconnect() end
+    if parkourLandedConnection then parkourLandedConnection:Disconnect() end
+
+    parkourJumpConnection = UserInputService.JumpRequest:Connect(function()
+        if not Settings.ParkourArtist then return end
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hum or not hrp then return end
+
+        local state = hum:GetState()
+        local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
+        local currentTime = tick()
+
+        if not inAir then
+            -- Premier saut normal
+            Settings.ParkourJumpCount = 1
+            Settings.ParkourLastJumpTime = currentTime
+        elseif Settings.ParkourJumpCount == 1 and (currentTime - Settings.ParkourLastJumpTime) >= 0.1 and not abilityCooldown then
+            -- Double saut : backflip (uniquement après 0.1s et si cooldown global inactif)
+            Settings.ParkourJumpCount = 2
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+            hrp.Velocity = Vector3.new(hrp.Velocity.X, math.max(hrp.Velocity.Y + 30, 30), hrp.Velocity.Z)
+
+            -- Jouer l'anim backflip
+            task.spawn(function()
+                if Settings.ParkourBackflipTrack then
+                    Settings.ParkourBackflipTrack:Stop()
+                end
+                local anim = Instance.new("Animation")
+                anim.AnimationId = "rbxassetid://108249870359826"
+                local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 2)
+                if animator then
+                    Settings.ParkourBackflipTrack = animator:LoadAnimation(anim)
+                    Settings.ParkourBackflipTrack.Priority = Enum.AnimationPriority.Action4
+                    Settings.ParkourBackflipTrack:Play()
+                end
+            end)
+
+            -- Démarrer le cooldown global de 5s
+            startAbilityCooldown()
+        end
+    end)
+
+    -- Réinitialiser le compteur au sol
+    parkourLandedConnection = RunService.Heartbeat:Connect(function()
+        if not Settings.ParkourArtist then return end
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local state = hum:GetState()
+        if state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.Landed then
+            if Settings.ParkourJumpCount == 2 then
+                Settings.ParkourJumpCount = 0
+                if Settings.ParkourBackflipTrack then
+                    Settings.ParkourBackflipTrack:Stop()
+                    Settings.ParkourBackflipTrack = nil
+                end
+            end
+        end
+    end)
+end
+
+-- === SLIDE AVEC VELOCITY ET ANIMATIONS EN 2 PHASES ===
+local slideConnection = nil
+local slideVelocityConnection = nil
+
+local function DoSlide()
+    if abilityCooldown or Settings.ParkourSliding then return end
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp then return end
+    if hum:GetState() == Enum.HumanoidStateType.Freefall then return end
+
+    Settings.ParkourSliding = true
+    startAbilityCooldown()  -- Active le cooldown global de 5s
+
+    local animator = hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 2)
+    
+    task.spawn(function()
+        local startAnim = Instance.new("Animation")
+        startAnim.AnimationId = "rbxassetid://128442665804257"
+        if animator then
+            Settings.SlideStartAnimTrack = animator:LoadAnimation(startAnim)
+            Settings.SlideStartAnimTrack.Priority = Enum.AnimationPriority.Action
+            Settings.SlideStartAnimTrack:Play()
+            
+            Settings.SlideStartAnimTrack.Stopped:Wait()
+            
+            if Settings.ParkourSliding then
+                local loopAnim = Instance.new("Animation")
+                loopAnim.AnimationId = "rbxassetid://128442665804258" -- SlidingLoop
+                Settings.SlideLoopAnimTrack = animator:LoadAnimation(loopAnim)
+                Settings.SlideLoopAnimTrack.Looped = true
+                Settings.SlideLoopAnimTrack.Priority = Enum.AnimationPriority.Action
+                Settings.SlideLoopAnimTrack:Play()
+            end
+        end
+    end)
+
+    -- Propulsion fluide : interpolation sur 0.35s vers 15 studs/s
+    local direction = hrp.CFrame.LookVector
+    local startVelocity = hrp.Velocity
+    local targetVelocity = Vector3.new(direction.X * 120, startVelocity.Y, direction.Z * 120)
+    local elapsed = 0
+    local slideDuration = 0.5
+
+    if slideVelocityConnection then slideVelocityConnection:Disconnect() end
+    slideVelocityConnection = RunService.Heartbeat:Connect(function(dt)
+        if not Settings.ParkourSliding then 
+            if slideVelocityConnection then slideVelocityConnection:Disconnect() end
+            slideVelocityConnection = nil
+            return 
+        end
+        
+        elapsed = elapsed + dt
+        local alpha = math.min(elapsed / slideDuration, 1)
+        local t = 1 - alpha
+        local eased = 1 - t * t * t
+        
+        if hrp then
+            hrp.Velocity = Vector3.new(
+                startVelocity.X + (targetVelocity.X - startVelocity.X) * eased,
+                hrp.Velocity.Y,
+                startVelocity.Z + (targetVelocity.Z - startVelocity.Z) * eased
+            )
+        end
+        
+        if alpha >= 1 then
+            if slideVelocityConnection then slideVelocityConnection:Disconnect() end
+            slideVelocityConnection = nil
+            
+            task.wait(0.3)
+            
+            Settings.ParkourSliding = false
+            if Settings.SlideLoopAnimTrack then
+                Settings.SlideLoopAnimTrack:Stop()
+                Settings.SlideLoopAnimTrack = nil
+            end
+        end
+    end)
+end
+
+local function StartParkourSlide()
+    if slideConnection then slideConnection:Disconnect() end
+    slideConnection = UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if not Settings.ParkourArtist then return end
+        if input.KeyCode == Enum.KeyCode.C then
+            DoSlide()
+        end
+    end)
+end
+
+-- === SLIDE MOBILE BUTTON (DRAGGABLE, CENTRÉ, NE DISPARAÎT PAS) ===
+local slideButton = nil
+local dragData = {
+    active = false,
+    startPos = nil,
+    startMouse = nil,
+}
+
+local function CreateSlideButton()
+    if slideButton then slideButton:Destroy() slideButton = nil end
+    if not Settings.ParkourArtist then return end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "ParkourSlideGUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = lp:WaitForChild("PlayerGui")
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "SlideBtn"
+    btn.Size = UDim2.fromOffset(90, 90)
+    -- Calculer la position en offset pur pour le centre de l'écran
+    local centerX = (gui.AbsoluteSize.X / 2) - 45
+    local centerY = (gui.AbsoluteSize.Y / 2) - 45
+    btn.Position = UDim2.new(0, centerX, 0, centerY)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    btn.Text = "⬇ SLIDE"
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 15
+    btn.Font = Enum.Font.GothamBold
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0.35, 0)
+    corner.Parent = btn
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 200, 255)
+    stroke.Thickness = 2.5
+    stroke.Transparency = 0.2
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = btn
+
+    local grad = Instance.new("UIGradient")
+    grad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 140, 255)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(20, 80, 200)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 30, 120)),
+    })
+    grad.Rotation = 135
+    grad.Parent = btn
+
+    -- Gestion du drag simple et efficace
+    local function onInputBegan(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragData.active = true
+            dragData.startPos = btn.Position
+            dragData.startMouse = input.Position
+        end
+    end
+
+    local function onInputChanged(input)
+        if not dragData.active then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            -- Calculer le déplacement
+            local delta = input.Position - dragData.startMouse
+            
+            -- Nouvelle position basée sur l'offset
+            local newX = dragData.startPos.X.Offset + delta.X
+            local newY = dragData.startPos.Y.Offset + delta.Y
+            
+            -- Appliquer la nouvelle position
+            btn.Position = UDim2.new(0, newX, 0, newY)
+        end
+    end
+
+    local function onInputEnded(input)
+        if not dragData.active then return end
+        dragData.active = false
+        
+        -- Vérifier si c'était un tap (pas de déplacement significatif)
+        if dragData.startMouse and input and input.Position then
+            local delta = (input.Position - dragData.startMouse).Magnitude
+            if delta < 5 then -- Seuil pour considérer comme un tap
+                DoSlide()
+            end
+        end
+    end
+
+    btn.InputBegan:Connect(onInputBegan)
+    btn.InputChanged:Connect(onInputChanged)
+    btn.InputEnded:Connect(onInputEnded)
+
+    -- Feedback visuel
+    local function onPress()
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 220, 80)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 100, 40)),
+        })
+    end
+    
+    local function onRelease()
+        grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 140, 255)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(20, 80, 200)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 30, 120)),
+        })
+    end
+
+    btn.MouseButton1Down:Connect(onPress)
+    btn.MouseButton1Up:Connect(onRelease)
+    
+    -- Pour le tactile
+    btn.TouchTap:Connect(function()
+        onPress()
+        task.wait(0.1)
+        onRelease()
+    end)
+
+    slideButton = gui
+end
+
+local function DestroySlideButton()
+    if slideButton then slideButton:Destroy() slideButton = nil end
+end
+
+-- ============================================================
+--  JUMP ROPE TAB
+-- ============================================================
+local JumpRopeUtilities = JumpRopeTab:AddSection("Jump Rope Utilities")
+
+JumpRopeUtilities:AddToggle("AutoJumpToggle", {Title = "Auto Jump", Default = false}):OnChanged(function(s)
+    Settings.AutoJump = s
+    if s then StartAutoJump() else if autoJumpConnection then autoJumpConnection:Disconnect() end end
+end)
+
+JumpRopeUtilities:AddToggle("AutoBalanceToggle", {Title = "Auto Balance [BETA]", Default = false}):OnChanged(function(s)
+    Settings.AutoBalance = s
+    if s then StartAutoBalance() else if autoBalanceConnection then autoBalanceConnection:Disconnect() end end
+end)
+
+JumpRopeUtilities:AddToggle("NoFallToggle", {Title = "No Fall", Default = false}):OnChanged(function(s)
+    Settings.NoFall = s
+    if s then StartNoFall() else if noFallConnection then noFallConnection:Disconnect() end end
+end)
+
+local PlatformSection = JumpRopeTab:AddSection("Platform Management")
+PlatformSection:AddButton({ Title = "Create Giant Platform", Callback = function()
+    local existing = workspace:FindFirstChild("GiantPlatform_JR")
+    if existing then existing:Destroy() end
+    local part = Instance.new("Part")
+    part.Name = "GiantPlatform_JR"
+    part.Size = Vector3.new(1000, 2, 1000)
+    part.Position = Vector3.new(634.30, 190.14, 923.67)
+    part.Anchored = true
+    part.Transparency = 0
+    part.Material = Enum.Material.Plastic
+    part.Color = Color3.fromRGB(163, 162, 165)
+    part.Parent = workspace
+end })
+PlatformSection:AddButton({ Title = "Remove Giant Platform", Callback = function()
+    local p = workspace:FindFirstChild("GiantPlatform_JR") if p then p:Destroy() end
+end })
+PlatformSection:AddButton({ Title = "Create Minimal Platform", Callback = function()
+    local existing = workspace:FindFirstChild("JumpRopeSafetyPlatform")
+    if existing then existing:Destroy() end
+    local part = Instance.new("Part")
+    part.Name = "JumpRopeSafetyPlatform"
+    part.Size = Vector3.new(200, 2, 50)
+    part.Position = Vector3.new(634.30, 190.14, 923.67)
+    part.Anchored = true
+    part.Transparency = 0.5
+    part.Material = Enum.Material.Neon
+    part.Color = Color3.fromRGB(100, 100, 255)
+    part.Parent = workspace
+end })
+PlatformSection:AddButton({ Title = "Remove Minimal Platform", Callback = function()
+    local p = workspace:FindFirstChild("JumpRopeSafetyPlatform") if p then p:Destroy() end
+end })
+
+local JRTeleports = JumpRopeTab:AddSection("Teleports")
+JRTeleports:AddButton({ Title = "TP to Start", Callback = function() SafeTP(CFrame.new(603.08, 197.14, 920.64)) end })
+JRTeleports:AddButton({ Title = "TP to End", Callback = function() SafeTP(CFrame.new(732.88, 197.14, 921.92)) end })
+JRTeleports:AddButton({ Title = "TP to Jump Rope Platform", Callback = function() SafeTP(CFrame.new(681.638, 196.204, 920.777)) end })
+
+-- ============================================================
+--  UNLOCK ALL TAB
+-- ============================================================
+local UnlockSection = EmptyTab:AddSection("Auto Farm")
+UnlockSection:AddToggle("AutoFarmBandages", {Title = "Auto Bring Bandages [ALPHA]", Default = false}):OnChanged(function(s) Settings.AutoFarmBandages = s end)
+
+local ParkourSection = EmptyTab:AddSection("Parkour Artist")
+
+ParkourSection:AddToggle("ParkourArtistToggle", {
+    Title = "Unlock Parkour Artist",
+    Default = false
+}):OnChanged(function(s)
+    Settings.ParkourArtist = s
+    if s then
+        StartParkourDoubleJump()
+        StartParkourSlide()
+        CreateSlideButton()
+    else
+        StopParkourArtist()
+        if slideConnection then slideConnection:Disconnect() slideConnection = nil end
+        if slideVelocityConnection then slideVelocityConnection:Disconnect() slideVelocityConnection = nil end
+        if Settings.SlideStartAnimTrack then Settings.SlideStartAnimTrack:Stop() Settings.SlideStartAnimTrack = nil end
+        if Settings.SlideLoopAnimTrack then Settings.SlideLoopAnimTrack:Stop() Settings.SlideLoopAnimTrack = nil end
+        DestroySlideButton()
+    end
+end)
+
+local EmoteSection = EmptyTab:AddSection("Emotes Player")
+
+local function GetEmotesList()
+    local animFolder = ReplicatedStorage:FindFirstChild("Animations")
+    if not animFolder then return {} end
+    local emotesFolder = animFolder:FindFirstChild("Emotes")
+    if not emotesFolder then return {} end
+    local emotes = {}
+    for _, emote in pairs(emotesFolder:GetChildren()) do
+        if emote:IsA("Animation") then table.insert(emotes, emote.Name) end
+    end
+    return emotes
+end
+
+local EmoteNameToId = {}
+
+local function UpdateEmoteMapping()
+    local animFolder = ReplicatedStorage:FindFirstChild("Animations")
+    if not animFolder then return end
+    local emotesFolder = animFolder:FindFirstChild("Emotes")
+    if not emotesFolder then return end
+    EmoteNameToId = {}
+    for _, emote in pairs(emotesFolder:GetChildren()) do
+        if emote:IsA("Animation") then EmoteNameToId[emote.Name] = emote.AnimationId end
+    end
+end
+
+local emoteDropdown = EmoteSection:AddDropdown("EmoteDropdown", {
+    Title = "Select Emote",
+    Values = {"Loading..."},
+    Multi = false,
+    Default = "Loading...",
+    Callback = function(value)
+        if value ~= "Loading..." and value ~= "No emotes found" then
+            Settings.SelectedEmote = EmoteNameToId[value] or ""
+        end
+    end
+})
+
+EmoteSection:AddButton({ Title = "Refresh Emotes", Description = "Reload dropdown's emotes", Callback = function()
+    UpdateEmoteMapping()
+    local emotes = GetEmotesList()
+    if #emotes > 0 then
+        emoteDropdown:SetValues(emotes)
+        emoteDropdown:SetValue(emotes[1])
+        Settings.SelectedEmote = EmoteNameToId[emotes[1]] or ""
+    else
+        emoteDropdown:SetValues({"No emotes found"})
+    end
+end })
+
+EmoteSection:AddButton({ Title = "Play Emote", Callback = function()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or Settings.SelectedEmote == "" then return end
+    if Settings.CurrentEmoteTrack then Settings.CurrentEmoteTrack:Stop() Settings.CurrentEmoteTrack = nil end
+    local anim = Instance.new("Animation")
+    anim.AnimationId = Settings.SelectedEmote
+    Settings.CurrentEmoteTrack = hum:LoadAnimation(anim)
+    Settings.CurrentEmoteTrack.Looped = Settings.EmoteLoop
+    Settings.CurrentEmoteTrack:AdjustSpeed(Settings.EmoteSpeed)
+    Settings.CurrentEmoteTrack:Play()
+end })
+
+EmoteSection:AddButton({ Title = "Stop Emote", Callback = function()
+    if Settings.CurrentEmoteTrack then Settings.CurrentEmoteTrack:Stop() Settings.CurrentEmoteTrack = nil end
+end })
+
+EmoteSection:AddToggle("EmoteLoopToggle", { Title = "Loop Emote", Default = false }):OnChanged(function(s)
+    Settings.EmoteLoop = s
+    if Settings.CurrentEmoteTrack then Settings.CurrentEmoteTrack.Looped = s end
+end)
+
+EmoteSection:AddSlider("EmoteSpeed", { Title = "Emote Speed", Default = 1, Min = 0.1, Max = 5, Rounding = 1, Callback = function(v)
+    Settings.EmoteSpeed = v
+    if Settings.CurrentEmoteTrack then Settings.CurrentEmoteTrack:AdjustSpeed(v) end
+end })
+
+task.spawn(function()
+    task.wait(2)
+    UpdateEmoteMapping()
+    local emotes = GetEmotesList()
+    if #emotes > 0 then
+        emoteDropdown:SetValues(emotes)
+        emoteDropdown:SetValue(emotes[1])
+        Settings.SelectedEmote = EmoteNameToId[emotes[1]] or ""
+    else
+        emoteDropdown:SetValues({"No emotes found"})
+    end
+end)
+
+-- ============================================================
+--  MAIN TAB - WALKSPEED / JUMP / GRAVITY / FLY / NOCLIP
+-- ============================================================
+local SectionWS = Tab:AddSection("Speed Configuration")
+local WSSlider = SectionWS:AddSlider("WalkSpeed", { Title = "Walkspeed value", Default = 16, Min = 1, Max = 48, Rounding = 0, Callback = function(v) Settings.WS = v end })
+SectionWS:AddInput("WSInput", { Title = "Manual WalkSpeed", Default = "16", Placeholder = "Enter value...", Callback = function(v)
+    local val = tonumber(v) if val and val <= 48 then WSSlider:SetValue(val) end
+end })
+SectionWS:AddToggle("WSToggle", {Title = "Enable Walkspeed", Default = false}):OnChanged(function(s) Settings.WSEnabled = s end)
+
+local SectionJP = Tab:AddSection("Jump Configuration")
+local JPSlider = SectionJP:AddSlider("JumpPower", { Title = "Jump Power value", Default = 50, Min = 1, Max = 100, Rounding = 0, Callback = function(v) Settings.JP = v end })
+SectionJP:AddInput("JPInput", { Title = "Manual JumpPower", Default = "50", Placeholder = "Enter value...", Callback = function(v)
+    local val = tonumber(v) if val and val <= 100 then JPSlider:SetValue(val) end
+end })
+SectionJP:AddToggle("JPToggle", {Title = "Enable Jump Power", Default = false}):OnChanged(function(s) Settings.JPEnabled = s end)
+SectionJP:AddToggle("IJToggle", {Title = "Infinite Jump", Default = false}):OnChanged(function(s) Settings.InfJump = s end)
+
+local SectionEnv = Tab:AddSection("Environnement")
+local GravSlider = SectionEnv:AddSlider("Gravity", { Title = "Gravity value", Default = 196.2, Min = 75, Max = 500, Rounding = 1, Callback = function(v) Settings.Grav = v end })
+SectionEnv:AddInput("GravInput", { Title = "Manual Gravity", Default = "196.2", Placeholder = "Enter value...", Callback = function(v)
+    local val = tonumber(v) if val and val <= 500 then GravSlider:SetValue(val) end
+end })
+SectionEnv:AddToggle("GravToggle", {Title = "Enable Gravity", Default = false}):OnChanged(function(s) Settings.GravEnabled = s end)
+
+local SectionFly = Tab:AddSection("Fly Configuration [DETECTED]")
+local FlySlider = SectionFly:AddSlider("FlySpeed", { Title = "Fly speed", Default = 50, Min = 10, Max = 100, Rounding = 0, Callback = function(v) Settings.FlySpeed = v end })
+SectionFly:AddInput("FlyInput", { Title = "Manual FlySpeed", Default = "50", Placeholder = "Enter value...", Callback = function(v)
+    local val = tonumber(v) if val and val <= 100 then FlySlider:SetValue(val) end
+end })
+SectionFly:AddToggle("FlyToggle", {Title = "Enable Fly [BETA]", Default = false}):OnChanged(function(s) Settings.FlyEnabled = s end)
+
+local SectionNoclip = Tab:AddSection("Collision [DETECTED]")
+SectionNoclip:AddToggle("NoclipToggle", {Title = "Noclip [v0.01]", Default = false}):OnChanged(function(s) Settings.Noclip = s end)
+
+local SectionOther = Tab:AddSection("Other Stuff")
+
+local antiRagdollConnection = nil
+SectionOther:AddToggle("AntiRagdollToggle", {Title = "Anti Ragdoll", Default = false}):OnChanged(function(s)
+    Settings.AntiRagdoll = s
+    if s then
+        if lp.Character then SetupAntiRagdoll() end
+        if antiRagdollConnection then antiRagdollConnection:Disconnect() end
+        antiRagdollConnection = lp.CharacterAdded:Connect(function()
+            task.wait(0.5)
+            if Settings.AntiRagdoll then SetupAntiRagdoll() end
+        end)
+    else
+        if antiRagdollConnection then antiRagdollConnection:Disconnect() antiRagdollConnection = nil end
+        CleanupAntiRagdoll(lp.Character)
+        local char = lp.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  ESP TAB
+-- ============================================================
+local ESPMain = ESPTab:AddSection("Master Switch")
+ESPMain:AddToggle("MasterESP", {
+    Title = "Enable ESP System",
+    Description = "Enable or disable the entire ESP system",
+    Default = false
+}):OnChanged(function(s) Settings.ESPEnabled = s end)
+
+local ESPVisualSection = ESPTab:AddSection("Visuals")
+ESPVisualSection:AddToggle("NamesESP", {Title = "ESP Names", Default = false}):OnChanged(function(s) Settings.ESPNames = s end)
+ESPVisualSection:AddToggle("DistESP", {Title = "ESP Distance", Default = false}):OnChanged(function(s) Settings.ESPDistance = s end)
+ESPVisualSection:AddToggle("BoxESP", {Title = "ESP Box", Default = false}):OnChanged(function(s) Settings.ESPBoxes = s end)
+ESPVisualSection:AddToggle("HighlightESP", {Title = "ESP Body", Default = false}):OnChanged(function(s) Settings.ESPHighlight = s end)
+ESPVisualSection:AddToggle("TracerESP", {Title = "ESP Tracers", Default = false}):OnChanged(function(s) Settings.ESPTracers = s end)
+
+local ESPCustomSection = ESPTab:AddSection("Customization")
+ESPCustomSection:AddColorpicker("ESPColor", { Title = "Global ESP Color", Default = Color3.fromRGB(255, 255, 255) }):OnChanged(function(v) Settings.ESPColor = v end)
+ESPCustomSection:AddSlider("FillTrans", { Title = "Highlight Transparency", Default = 0.5, Min = 0, Max = 1, Rounding = 1, Callback = function(v) Settings.FillTransparency = v end })
+ESPCustomSection:AddSlider("BoxThick", { Title = "Box Thickness", Default = 1, Min = 1, Max = 5, Rounding = 0, Callback = function(v) Settings.BoxThickness = v end })
+
+-- ============================================================
+--  GAME TABS
+-- ============================================================
+local RLGLSection = GameTab:AddSection("Teleports")
+RLGLSection:AddButton({ Title = "TP to Start", Callback = function() SafeTP(CFrame.new(-53.90, 1023.05, -515.86)) end })
+RLGLSection:AddButton({ Title = "TP to End", Callback = function() SafeTP(CFrame.new(-46.28, 1024.71, 135.60)) end })
+
+local RLGLOthers = GameTab:AddSection("Others Players")
+RLGLOthers:AddButton({ Title = "Tp to Random Injured player [BETA]", Callback = function()
+    local injured = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character then
+            local found = false
+            for _, tag in pairs(p.Character:GetChildren()) do
+                local name = string.lower(tag.Name)
+                if string.find(name, "injur") or string.find(name, "hurt") then found = true break end
+            end
+            if found and p.Character:FindFirstChild("HumanoidRootPart") then
+                table.insert(injured, p.Character.HumanoidRootPart)
+            end
+        end
+    end
+    if #injured > 0 then
+        SafeTP(injured[math.random(1, #injured)].CFrame * CFrame.new(0, 0, 2))
+    end
+end })
+
+local RLGLAuto = GameTab:AddSection("Bypass")
+RLGLAuto:AddToggle("AntiRollback", {Title = "Anti-Rollback [BETA]", Default = true}):OnChanged(function(s) Settings.AntiRollback = s end)
+RLGLAuto:AddButton({ Title = "Remove Injure", Description = "Remove all injured tags", Callback = function()
+    local char = lp.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local animate = char:FindFirstChild("Animate")
+        if animate then
+            for _, obj in pairs(animate:GetChildren()) do
+                if string.find(string.lower(obj.Name), "hurt") then obj:Destroy() end
+            end
+        end
+        for _, tag in pairs(char:GetChildren()) do
+            local tagName = string.lower(tag.Name)
+            if string.find(tagName, "injur") or string.find(tagName, "hurt") then tag:Destroy() end
+        end
+        if hum.WalkSpeed < 16 then hum.WalkSpeed = 16 end
+        hum.JumpPower = 50
+        hum.UseJumpPower = true
+    end
+end })
+
+LightOutTab:AddToggle("FullBrightToggle", {Title = "Full Bright", Default = false}):OnChanged(function(s)
+    Settings.FullBright = s
+    if s then
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    else
+        Lighting.Ambient = origAmbient
+        Lighting.OutdoorAmbient = origOutdoorAmbient
+    end
+end)
+
+local LOSafeSection = LightOutTab:AddSection("Automation [ALPHA]")
+LOSafeSection:AddSlider("LowPVSlider", { Title = "TP when HP <", Default = 25, Min = 0, Max = 100, Rounding = 0, Callback = function(v) Settings.LowPVSliderValue = v end })
+LOSafeSection:AddToggle("TPToSafeZoneToggle", { Title = "TP to safe zone when low pv", Default = false }):OnChanged(function(s) Settings.TPToSafeZoneOnLowPV = s end)
+
+local LOSafeTeleport = LightOutTab:AddSection("Teleportation")
+LOSafeTeleport:AddButton({ Title = "Go to Safe zone", Callback = function()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then Settings.LastPos = hrp.CFrame SafeTP(CFrame.new(-237.37, 77.37, 601.85)) end
+end })
+LOSafeTeleport:AddButton({ Title = "Go back", Callback = function()
+    if Settings.LastPos then SafeTP(Settings.LastPos) end
+end })
+
+-- ============================================================
+--  HIDE N SEEK TAB
+-- ============================================================
+local HNS_Visuals = HidenSeekTab:AddSection("Visuals")
+HNS_Visuals:AddToggle("RoleESPToggle", {
+    Title = "Enable Role Highlights",
+    Description = "Hider = Blue, Seeker = Red, Guard = Purple",
+    Default = false
+}):OnChanged(function(s) Settings.RoleESP = s end)
+
+local HNS_TP = HidenSeekTab:AddSection("Teleports")
+HNS_TP:AddButton({ Title = "TP to Hider", Callback = function()
+    local h = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and IsHider(p) then
+            table.insert(h, p.Character.HumanoidRootPart)
+        end
+    end
+    if #h > 0 then SafeTP(h[math.random(1, #h)].CFrame * CFrame.new(0, 0, 2)) end
+end })
+HNS_TP:AddButton({ Title = "TP to Seeker", Callback = function()
+    local s = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and IsSeeker(p) then
+            table.insert(s, p.Character.HumanoidRootPart)
+        end
+    end
+    if #s > 0 then SafeTP(s[math.random(1, #s)].CFrame * CFrame.new(0, 0, 3)) end
+end })
+HNS_TP:AddButton({ Title = "TP to Guard", Callback = function()
+    local g = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and IsGuard(p) then
+            table.insert(g, p.Character.HumanoidRootPart)
+        end
+    end
+    if #g > 0 then SafeTP(g[math.random(1, #g)].CFrame * CFrame.new(0, 0, 3)) end
+end })
+
+local HNS_HiderStalk = HidenSeekTab:AddSection("Seeker")
+HNS_HiderStalk:AddToggle("HiderStalkToggle", {
+    Title = "Follow Hider",
+    Description = "Automatically follows Hiders. You only need to kill them.",
+    Default = false
+}):OnChanged(function(s)
+    Settings.StalkHider = s
+    if s then StartStalkingHider() else StopStalking() end
+end)
+HNS_HiderStalk:AddToggle("IgnoreFriendsToggle", { Title = "Ignore Friends List", Default = false }):OnChanged(function(s)
+    Settings.IgnoreFriends = s
+    if Settings.StalkHider then StartStalkingHider() end
+end)
+
+local HNS_Hider = HidenSeekTab:AddSection("Hider")
+HNS_Hider:AddToggle("InfStaminaToggle", {Title = "Infinite Stamina", Default = false}):OnChanged(function(s) Settings.InfStamina = s end)
+HNS_Hider:AddToggle("HideStaminaBarToggle", {Title = "Hide Stamina Bar", Default = false}):OnChanged(function(s) Settings.HideStaminaBar = s end)
+HNS_Hider:AddButton({ Title = "TP 100 studs Up", Callback = function()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then SafeTP(hrp.CFrame + Vector3.new(0, 100, 0)) end
+end })
+HNS_Hider:AddButton({ Title = "TP 75 studs Down", Callback = function()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then SafeTP(hrp.CFrame + Vector3.new(0, -75, 0)) end
+end })
+
+local TOWTeleports = TugOfWarTab:AddSection("Teleports")
+TOWTeleports:AddButton({ Title = "TP to Platform", Callback = function() SafeTP(CFrame.new(-577.88, 1023.00, -512.60)) end })
+local TOWAuto = TugOfWarTab:AddSection("Auto Mechanisms")
+TOWAuto:AddToggle("AutoPull", {Title = "Auto Pull [ALPHA]", Default = false}):OnChanged(function(s) Settings.AutoPull = s end)
+TOWAuto:AddToggle("PerfectPull", {Title = "Perfect Pull [ALPHA]", Default = false}):OnChanged(function(s) Settings.PerfectPull = s end)
+
+local GBSection = GlasseBridgeTab:AddSection("Teleports")
+GBSection:AddButton({ Title = "TP to Start", Callback = function() SafeTP(CFrame.new(22.72, 520.68, -1534.96)) end })
+GBSection:AddButton({ Title = "TP to End", Callback = function() SafeTP(CFrame.new(-206.65, 520.73, -1534.21)) end })
+
+local SSSection = SkySquidTab:AddSection("Platform")
+SSSection:AddButton({ Title = "Create Platform", Callback = function()
+    local existing = workspace:FindFirstChild("SkyPlatform_SS")
+    if existing then existing:Destroy() end
+    local part = Instance.new("Part")
+    part.Name = "SkyPlatform_SS"
+    part.Size = Vector3.new(1500, 2, 1500)
+    part.Position = Vector3.new(24.65, 964.13, -21.13)
+    part.Anchored = true
+    part.Transparency = 0.3
+    part.Material = Enum.Material.Neon
+    part.BrickColor = BrickColor.new("Institutional white")
+    part.Parent = workspace
+end })
+SSSection:AddButton({ Title = "Remove Platform", Callback = function()
+    local p = workspace:FindFirstChild("SkyPlatform_SS") if p then p:Destroy() end
+end })
+
+local SSTeleports = SkySquidTab:AddSection("Teleports")
+SSTeleports:AddButton({ Title = "TP to First part", Callback = function() SafeTP(CFrame.new(24.65, 966.13, -21.13)) end })
+SSTeleports:AddButton({ Title = "TP to Second part", Callback = function() SafeTP(CFrame.new(12.11, 968.13, 92.91)) end })
+SSTeleports:AddButton({ Title = "TP to Third part", Callback = function() SafeTP(CFrame.new(-0.10, 968.13, 181.79)) end })
+
+local DalgonaSection = DalgonaTab:AddSection("Dalgona Utilities")
+DalgonaSection:AddToggle("AntiBlinkToggle", {Title = "Anti-Blink", Default = false}):OnChanged(function(s) Settings.AntiBlink = s end)
+
+-- ============================================================
+--  ESP OBJECTS
+-- ============================================================
+local function CreateESP(player)
+    if player == lp then return end
+    local drawings = {
+        Box = Drawing.new("Square"),
+        Tracer = Drawing.new("Line"),
+        Name = Drawing.new("Text"),
+        Distance = Drawing.new("Text"),
+        Highlight = Instance.new("Highlight"),
+        RoleHighlight = Instance.new("Highlight")
+    }
+
+    drawings.Box.Thickness = 1
+    drawings.Box.Filled = false
+    drawings.Box.Transparency = 1
+    drawings.Box.Visible = false
+
+    drawings.Tracer.Thickness = 1
+    drawings.Tracer.Visible = false
+
+    drawings.Name.Size = 16
+    drawings.Name.Center = true
+    drawings.Name.Outline = true
+    drawings.Name.Visible = false
+
+    drawings.Distance.Size = 14
+    drawings.Distance.Center = true
+    drawings.Distance.Outline = true
+    drawings.Distance.Visible = false
+
+    drawings.Highlight.Enabled = false
+    drawings.Highlight.FillColor = Settings.ESPColor
+    drawings.Highlight.OutlineColor = Color3.new(1, 1, 1)
+    drawings.Highlight.FillTransparency = Settings.FillTransparency
+    drawings.Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+
+    drawings.RoleHighlight.Enabled = false
+    drawings.RoleHighlight.OutlineColor = Color3.new(1, 1, 1)
+    drawings.RoleHighlight.FillTransparency = Settings.FillTransparency
+    drawings.RoleHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+
+    ESP_Objects[player] = drawings
+end
+
+for _, player in pairs(Players:GetPlayers()) do CreateESP(player) end
+Players.PlayerAdded:Connect(CreateESP)
+Players.PlayerRemoving:Connect(function(p)
+    if ESP_Objects[p] then
+        for _, v in pairs(ESP_Objects[p]) do
+            if typeof(v) == "Instance" then v:Destroy() else pcall(function() v:Remove() end) end
+        end
+        ESP_Objects[p] = nil
+    end
+end)
+
+-- ============================================================
+--  UTILS TAB
+-- ============================================================
+local SectionFreecam = UtilsTab:AddSection("Free Camera")
+SectionFreecam:AddToggle("FreecamToggle", {Title = "Enable Freecam", Default = false}):OnChanged(function(s)
+    Settings.FreecamEnabled = s
+    local char = lp.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if s then
+        FreecamPos = Camera.CFrame.Position
+        local look = Camera.CFrame.LookVector
+        Settings.FreecamRotY = math.atan2(-look.X, -look.Z)
+        Settings.FreecamRotX = math.asin(look.Y)
+        Camera.CameraType = Enum.CameraType.Scriptable
+        if hrp then hrp.Anchored = true end
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+    else
+        Camera.CameraType = Enum.CameraType.Custom
+        if hrp then hrp.Anchored = false end
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+end)
+SectionFreecam:AddSlider("FreecamSpeed", { Title = "Freecam Speed", Default = 1, Min = 0.1, Max = 5, Rounding = 1, Callback = function(v) Settings.FreecamSpeed = v end })
+
+local SectionAnim = UtilsTab:AddSection("Animation Player")
+SectionAnim:AddInput("AnimInput", { Title = "Animation ID", Default = "", Placeholder = "rbxassetid://...", Callback = function(v) Settings.AnimId = v end })
+SectionAnim:AddToggle("AnimLoopToggle", {Title = "Loop Animation", Default = false}):OnChanged(function(s) Settings.AnimLoop = s end)
+SectionAnim:AddButton({ Title = "Play Animation", Callback = function()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and Settings.AnimId ~= "" then
+        if Settings.CurrentAnimTrack then Settings.CurrentAnimTrack:Stop() end
+        local anim = Instance.new("Animation")
+        anim.AnimationId = Settings.AnimId
+        Settings.CurrentAnimTrack = hum:LoadAnimation(anim)
+        Settings.CurrentAnimTrack.Looped = Settings.AnimLoop
+        Settings.CurrentAnimTrack:Play()
+    end
+end })
+SectionAnim:AddButton({ Title = "Stop Animation", Callback = function()
+    if Settings.CurrentAnimTrack then Settings.CurrentAnimTrack:Stop() end
+end })
+
+local SectionPos = UtilsTab:AddSection("Position Finder")
+local PosLabel = SectionPos:AddParagraph({ Title = "Current Position", Content = "X: 0, Y: 0, Z: 0" })
+SectionPos:AddButton({ Title = "Find Position", Callback = function()
+    local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local pos = hrp.Position
+        Settings.CurrentPos = string.format("%.2f, %.2f, %.2f", pos.X, pos.Y, pos.Z)
+        PosLabel:SetDesc("X: " .. Settings.CurrentPos)
+    end
+end })
+SectionPos:AddButton({ Title = "Copy Position", Callback = function() setclipboard(Settings.CurrentPos) end })
+
+-- ============================================================
+--  HEARTBEAT PRINCIPAL (optimisé)
+-- ============================================================
+RunService.Heartbeat:Connect(function()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    if hum and hrp then
+        -- Anti-rollback : limiter la vélocité anormale
+        if Settings.AntiRollback and not Settings.FlyEnabled then
+            local vel = hrp.Velocity
+            local hVel = Vector3.new(vel.X, 0, vel.Z)
+            if hVel.Magnitude > 80 then
+                hrp.Velocity = Vector3.new(vel.X * 0.7, vel.Y, vel.Z * 0.7)
+            end
+        end
+
+        -- WalkSpeed : NE PAS écraser InfStamina
+        if Settings.WSEnabled and not Settings.FreecamEnabled and not Settings.InfStamina then
+            hum.WalkSpeed = Settings.WS
+        end
+
+        -- JumpPower
+        if Settings.JPEnabled and not Settings.FreecamEnabled then
+            hum.JumpPower = Settings.JP
+            hum.UseJumpPower = true
+        end
+
+        -- Noclip
+        if Settings.Noclip then
+            hum:ChangeState(11)
+            for _, v in pairs(char:GetChildren()) do
+                if v:IsA("BasePart") then v.CanCollide = false end
+            end
+        end
+    end
+
+    if Settings.GravEnabled then
+        workspace.Gravity = Settings.Grav
+    end
+end)
+
+-- ============================================================
+--  INFINITE JUMP
+-- ============================================================
+UserInputService.JumpRequest:Connect(function()
+    if Settings.InfJump and not Settings.FreecamEnabled then
+        local hum = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+        if hum and tick() - lastJump >= 0.1 then
+            hum:ChangeState(3)
+            lastJump = tick()
+        end
+    end
+end)
+
+-- ============================================================
+--  RENDER STEPPED : FREECAM / FLY / ESP
+-- ============================================================
+RunService.RenderStepped:Connect(function(dt)
+    -- Freecam
+    if Settings.FreecamEnabled then
+        local lookCFrame = CFrame.Angles(0, Settings.FreecamRotY, 0) * CFrame.Angles(Settings.FreecamRotX, 0, 0)
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir += lookCFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir -= lookCFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir -= lookCFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir += lookCFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir -= Vector3.new(0,1,0) end
+        if moveDir.Magnitude > 0 then
+            FreecamPos += moveDir.Unit * (Settings.FreecamSpeed * 2.5)
+        end
+        Camera.CFrame = CFrame.new(FreecamPos) * lookCFrame
+    end
+
+    -- Fly (amélioré : pas de reset Velocity brut, utilisation du dt)
+    if Settings.FlyEnabled and not Settings.FreecamEnabled then
+        local hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local dir = Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+            -- Zéro velocité seulement si on bouge activement pour éviter le freeze permanent
+            if dir.Magnitude > 0 then
+                hrp.Velocity = Vector3.zero
+                hrp.CFrame = hrp.CFrame + (dir.Unit * Settings.FlySpeed * dt * 60)
+            else
+                hrp.Velocity = Vector3.new(0, -1, 0) -- légère gravité pour ne pas flotter
+            end
+        end
+    end
+
+    -- ESP Render
+    for player, drawings in pairs(ESP_Objects) do
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+        if char and hrp and hum and hum.Health > 0 then
+            local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+            local finalCol = GetESPColor(player)
+
+            -- Role ESP highlight (indépendant du master ESP)
+            if Settings.RoleESP then
+                if drawings.RoleHighlight.Parent ~= char then
+                    drawings.RoleHighlight.Parent = char
+                end
+                drawings.RoleHighlight.FillColor = GetRoleColor(player)
+                drawings.RoleHighlight.FillTransparency = Settings.FillTransparency
+                drawings.RoleHighlight.Enabled = true
+                drawings.Highlight.Enabled = false
+            else
+                drawings.RoleHighlight.Enabled = false
+            end
+
+            if Settings.ESPEnabled and onScreen then
+                -- Highlight body (si role ESP désactivé)
+                if Settings.ESPHighlight and not Settings.RoleESP then
+                    if drawings.Highlight.Parent ~= char then
+                        drawings.Highlight.Parent = char
+                    end
+                    drawings.Highlight.FillColor = finalCol
+                    drawings.Highlight.FillTransparency = Settings.FillTransparency
+                    drawings.Highlight.Enabled = true
+                else
+                    drawings.Highlight.Enabled = false
+                end
+
+                local lpChar = lp.Character
+                local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+                local distance = lpHRP and (lpHRP.Position - hrp.Position).Magnitude or 100
+
+                local nameSize = math.clamp(20 - (distance / 30), 8, 20)
+                local distSize = math.clamp(18 - (distance / 35), 7, 18)
+
+                -- Position texte à droite, en s'adaptant aux bords de l'écran
+                local rightOffset = 50 + (distance / 10)
+                local rightOffsetX = pos.X + rightOffset
+                if rightOffsetX > Camera.ViewportSize.X - 50 then
+                    rightOffsetX = pos.X - rightOffset
+                end
+
+                if Settings.ESPNames then
+                    drawings.Name.Visible = true
+                    drawings.Name.Text = player.Name
+                    drawings.Name.Position = Vector2.new(rightOffsetX, pos.Y - 30)
+                    drawings.Name.Color = finalCol
+                    drawings.Name.Size = nameSize
+                    drawings.Name.Center = false
+                else
+                    drawings.Name.Visible = false
+                end
+
+                if Settings.ESPDistance and lpHRP then
+                    drawings.Distance.Visible = true
+                    drawings.Distance.Text = "[" .. math.floor(distance) .. "m]"
+                    drawings.Distance.Position = Vector2.new(rightOffsetX, pos.Y - 15)
+                    drawings.Distance.Color = finalCol
+                    drawings.Distance.Size = distSize
+                    drawings.Distance.Center = false
+                else
+                    drawings.Distance.Visible = false
+                end
+
+                -- Box ESP (calcul depuis Head et HRP)
+                local head = char:FindFirstChild("Head")
+                local topPos = head and select(1, Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))) or select(1, Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 2.5, 0)))
+                local bottomPos = select(1, Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0, 2, 0)))
+                local boxH = math.abs(topPos.Y - bottomPos.Y)
+
+                if Settings.ESPBoxes then
+                    drawings.Box.Visible = true
+                    drawings.Box.Size = Vector2.new(boxH * 0.6, boxH)
+                    drawings.Box.Position = Vector2.new(pos.X - (drawings.Box.Size.X / 2), pos.Y - (drawings.Box.Size.Y / 2))
+                    drawings.Box.Color = finalCol
+                    drawings.Box.Thickness = Settings.BoxThickness
+                else
+                    drawings.Box.Visible = false
+                end
+
+                if Settings.ESPTracers then
+                    drawings.Tracer.Visible = true
+                    drawings.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+                    drawings.Tracer.To = Vector2.new(pos.X, pos.Y)
+                    drawings.Tracer.Color = finalCol
+                else
+                    drawings.Tracer.Visible = false
+                end
+            else
+                drawings.Highlight.Enabled = false
+                drawings.Box.Visible = false
+                drawings.Name.Visible = false
+                drawings.Distance.Visible = false
+                drawings.Tracer.Visible = false
+            end
+        else
+            -- Joueur mort ou sans personnage : tout éteindre
+            drawings.RoleHighlight.Enabled = false
+            drawings.Highlight.Enabled = false
+            drawings.Box.Visible = false
+            drawings.Name.Visible = false
+            drawings.Distance.Visible = false
+            drawings.Tracer.Visible = false
+        end
+    end
+end)
+
+Window:SelectTab(1)
